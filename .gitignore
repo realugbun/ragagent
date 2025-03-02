@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# System files
+.DS_Store
+
+# Test data
+testdocs/
+uploads/
+
+# Environment
+.env
+
+worklist.md
+
+redis-data
+
+yoyo.ini

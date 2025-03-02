@@ -1,0 +1,6 @@
+[DEFAULT]
+sources = migrations
+database = 
+batch_mode = off
+verbosity = 0
+
