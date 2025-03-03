@@ -83,9 +83,9 @@ You can use the docker compose file to start a local instance of redis.
 docker compose up redis -d
 ```
 
-In a terminal you need to start rq to pick up the redis queues.
+Start the worker service as a module.
 ```sh
-uv run rq worker ${REDIS_QUEUE} --url redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/${REDIS_DB}
+uv run -m src.worker
 ```
 
 rq will invoke the code in the worker.py file.

@@ -1,7 +1,7 @@
 from typing import List
 from datetime import datetime, timezone
 
-import hashlib
+import xxhash
 from keybert import KeyBERT
 from langchain_core.documents import Document
 from langchain_huggingface import HuggingFaceEmbeddings
@@ -50,10 +50,10 @@ def get_embedding_function():
      encode_kwargs={'normalize_embeddings': True},
 )
 
-def get_text_hash(doc: Document) -> str:
-    return hashlib.md5(doc.page_content.encode('utf-8')).hexdigest()
+def get_text_hash(doc: Document) -> int:
+    return xxhash.xxh64(doc.page_content).hexdigest()
 
-def get_tokens_in_chunk(chunk: str) -> int:
+def get_tokens_in_text(chunk: str) -> int:
     tokenizer = get_tokenizer()
     encoding = tokenizer(chunk, return_tensors="pt")
     return encoding.input_ids.shape[1]
@@ -64,7 +64,7 @@ def add_metadata_to_chunk(chunk: Document, doc_id: str, document_hash:str, sourc
     chunk.metadata["chunk_hash"] = get_text_hash(chunk)
     chunk.metadata["chunk_index"] = index
     if token_count:
-        chunk.metadata["token_count"] = get_tokens_in_chunk(chunk.page_content)
+        chunk.metadata["token_count"] = get_tokens_in_text(chunk.page_content)
     chunk.metadata["source_type"] = source_type
     chunk.metadata["updated_at"] = datetime.now(timezone.utc).isoformat()
     chunk.metadata["created_at"] = datetime.now(timezone.utc).isoformat()

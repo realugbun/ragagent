@@ -23,9 +23,6 @@ tokenizer = get_tokenizer()
 redis_conn = db.get_redis()
 q = Queue(Config.REDIS_QUEUE, connection=redis_conn)
 
-# We need both because the vector db only has functions for querying by vectors
-vectordb = db.get_pgvector_db(embedding_function)
-
 def is_valid_uuid(uuid_string:str, version:int =4) -> bool:
     """
     Checks if a string is a valid UUID of a specific version.
@@ -47,7 +44,7 @@ def format_document_response(results, correlation_id: str = None):
     return {
         "metadata": {
             "correlation_id": correlation_id,
-            "token_count": sum([int(result[9]) for result in results]),
+            "token_count": sum([int(result[8]) for result in results]),
             "chunk_count": len(results)
         },
         "data": [
@@ -58,13 +55,12 @@ def format_document_response(results, correlation_id: str = None):
                 "document_hash": result[3],
                 "tags": result[4] if result[4] is not None else [],
                 "source": result[5],
-                "chunk_index": int(result[6]),
-                "start_index": int(result[7]),
-                "source_type": result[8],
-                "token_count": int(result[9]),
-                "created_at": result[10],
-                "updated_at": result[11],
-                "document": result[12]
+                "document_index": int(result[6]),
+                "file_type": result[7],
+                "token_count": int(result[8]),
+                "created_at": result[9],
+                "updated_at": result[10],
+                "text": result[11]
             }
             for result in results
         ]
@@ -99,25 +95,24 @@ def search_vector_store(request: Request, document_request: DocumentRequest):
         response = {
             "metadata": {
                 "correlation_id": correlation_id,
-                "token_count": sum([int(result[9]) for result in results]),
+                "token_count": sum([int(result[8]) for result in results]),
                 "chunk_count": len(results)
             },
             "data": [
                 {
-                    "id": result[0],
+                    "chunk_id": result[0],
                     "chunk_hash": result[1],
                     "document_id": result[2],
                     "document_hash": result[3],
                     "tags": result[4] if result[4] is not None else [],
                     "source": result[5],
-                    "chunk_index": result[6],
-                    "start_index": int(result[7]),
-                    "source_type": result[8],
-                    "token_count": int(result[9]),
-                    "created_at": result[10],
-                    "updated_at": result[11],
-                    "document": result[12],
-                    "similarity_score": result[13]
+                    "document_index": int(result[6]),
+                    "file_type": result[7],
+                    "token_count": int(result[8]),
+                    "created_at": result[9],
+                    "updated_at": result[10],
+                    "text": result[11],
+                    "similarity_score": result[12]
                 }
                 for result in results
             ]
@@ -171,57 +166,53 @@ class CreateDocumentRequest(BaseModel):
     document: str
     token_limit: int = int(Config.CHUNK_TOKEN_LIMIT)
 
-@app.post("/v1/document", status_code=status.HTTP_201_CREATED)
-def create_document(request: Request, document_request: CreateDocumentRequest):
-    correlation_id = getattr(request.state, "correlation_id", None)
-    content = document_request.document
-    token_limit = document_request.token_limit
+# @app.post("/v1/document", status_code=status.HTTP_201_CREATED)
+# def create_document(request: Request, document_request: CreateDocumentRequest):
+#     correlation_id = getattr(request.state, "correlation_id", None)
+#     content = document_request.document
+#     token_limit = document_request.token_limit
 
-    if not content:
-        logger.error("Content cannot be empty", extra={"correlation_id": correlation_id})
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Content cannot be empty")
+#     if not content:
+#         logger.error("Content cannot be empty", extra={"correlation_id": correlation_id})
+#         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Content cannot be empty")
     
-    doc = Document(content)
-    doc_hash = get_text_hash(doc)
+#     doc = Document(content)
+#     doc_hash = get_text_hash(doc)
 
     
-    is_exists = db.search_by_document_hash(get_text_hash(Document(content)))
-    if is_exists:
-        logger.error("Document already exists", extra={"correlation_id": correlation_id, "document_id": is_exists[0][2]})
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Document already exists with id {}".format(is_exists[0][2]))
+#     is_exists = db.search_by_document_hash(get_text_hash(Document(content)))
+#     if is_exists:
+#         logger.error("Document already exists", extra={"correlation_id": correlation_id, "document_id": is_exists[0][2]})
+#         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Document already exists with id {}".format(is_exists[0][2]))
     
-    text_splitter = get_text_splitter(tokenizer, chunk_size=token_limit)
+#     text_splitter = get_text_splitter(tokenizer, chunk_size=token_limit)
     
-    chunks = text_splitter.split_documents([doc])
-    i = 0
+#     chunks = text_splitter.split_documents([doc])
+#     i = 0
 
-    try:
-        doc_id = str(uuid.uuid4())
-        for chunk in chunks:
-            chunk = add_metadata_to_chunk(
-                chunk=chunk, 
-                doc_id=doc_id,
-                document_hash=doc_hash,
-                source_type="api",
-                index=i,
-            )
-            chunk.metadata["tags"] = get_chunk_tags(chunk)
-            i += 1
+#     try:
+#         doc_id = str(uuid.uuid4())
+#         for chunk in chunks:
+#             chunk = add_metadata_to_chunk(
+#                 chunk=chunk, 
+#                 doc_id=doc_id,
+#                 document_hash=doc_hash,
+#                 source_type="api",
+#                 index=i,
+#             )
+#             chunk.metadata["tags"] = get_chunk_tags(chunk)
+#             i += 1
         
-        vectordb.add_documents(chunks)
+#         vectordb.add_documents(chunks)
 
-        results = db.search_by_document_hash(doc_hash)
-        response = format_document_response(results, correlation_id)
+#         results = db.search_by_document_hash(doc_hash)
+#         response = format_document_response(results, correlation_id)
 
-    except Exception as e:
-        logger.error("Error creating chunks from document", extra={"correlation_id": correlation_id, "error": str(e)})
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
+#     except Exception as e:
+#         logger.error("Error creating chunks from document", extra={"correlation_id": correlation_id, "error": str(e)})
+#         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
     
-    return response
-
-class TextRequest(BaseModel):
-    text: str | None = None
-    token_limit: int = 1024
+#     return response
 
 
 @app.post("/v1/document/async", status_code=status.HTTP_202_ACCEPTED)
@@ -242,9 +233,9 @@ async def create_document_async(
     if not file and not text:
         logger.error("Must provide file or text", extra={"correlation_id": correlation_id})
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Must provide file or text")
-    if max_chunk_size < 128:
-        logger.error("Token limit must be at least 128", extra={"correlation_id": correlation_id})
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Token limit must be at least 128")
+    if max_chunk_size < Config.MIN_CHUNK_SIZE:
+        logger.error("Max chunk size too small", extra={"correlation_id": correlation_id, "max_chunk_size": max_chunk_size, "system_min": Config.MIN_CHUNK_SIZE})
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"max_chunk_size must be at least {Config.MIN_CHUNK_SIZE}")
     
     # The collection id will eventually be tied to users so each has their own collection
     collection_id = db.get_collection_id(Config.DB_COLLECTION_NAME)
@@ -260,9 +251,9 @@ async def create_document_async(
         os.makedirs("./uploads", exist_ok=True)
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
-        job_id = db.create_job(max_chunk_size=max_chunk_size, collection_id=collection_id, file_path=file_path)
+        job_id = db.create_job(max_chunk_size=max_chunk_size, collection_id=collection_id, source=file_path)
     else:
-        job_id = db.create_job(max_chunk_size=max_chunk_size, collection_id=collection_id, text=text)
+        job_id = db.create_job(max_chunk_size=max_chunk_size, collection_id=collection_id, source="text", text=text)
     
     background_tasks.add_task(q.enqueue, "src.worker.process_document", job_id)
     logger.info(f"Enqueued job {job_id}", extra={"correlation_id": correlation_id})
@@ -337,20 +328,22 @@ def delete_document_by_id(request: Request, document_id: str):
     except HTTPException as http_error:
         raise http_error
     except Exception as e:
-        logger.error("Error deleting document by hash", extra={"correlation_id": correlation_id, "error": str(e)})
+        logger.error("Error deleting document by id", extra={"correlation_id": correlation_id, "error": str(e)})
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
     
     return response
 
-class PreviewDocumentRequest(CreateDocumentRequest):
-    token_count: bool = False
+class PreviewDocumentRequest(BaseModel):
+    max_chunk_size: int = 1024
+    text: str
     tags: bool = False
+    token_count: bool = False
 
 @app.post("/v1/document/preview")
 def preview_document(request: Request, document_request: PreviewDocumentRequest):
     correlation_id = getattr(request.state, "correlation_id", None)
-    content = document_request.document
-    token_limit = document_request.token_limit
+    content = document_request.text
+    max_chunk_size = document_request.max_chunk_size
     is_token_count = document_request.token_count
     is_tags = document_request.tags
 
@@ -358,8 +351,12 @@ def preview_document(request: Request, document_request: PreviewDocumentRequest)
         logger.error("Content cannot be empty", extra={"correlation_id": correlation_id})
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Content cannot be empty")
     
+    if max_chunk_size < Config.MIN_CHUNK_SIZE:
+        logger.error("Max chunk size too small", extra={"correlation_id": correlation_id, "max_chunk_size": max_chunk_size, "system_min": Config.MIN_CHUNK_SIZE})
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"max_chunk_size must be at least {Config.MIN_CHUNK_SIZE}")
+    
     doc = Document(content)
-    text_splitter = get_text_splitter(tokenizer, chunk_size=token_limit)
+    text_splitter = get_text_splitter(tokenizer, chunk_size=max_chunk_size)
     doc_hash = get_text_hash(doc)
     chunks = text_splitter.split_documents([doc])
     i = 0
@@ -378,22 +375,21 @@ def preview_document(request: Request, document_request: PreviewDocumentRequest)
     response = {
         "metadata": {
             "correlation_id": correlation_id,
-            "token_count": sum([chunk.metadata["token_count"] for chunk in chunks]),
+            **({"token_count": sum([chunk.metadata["token_count"] for chunk in chunks])} if is_token_count else {}),
             "chunk_count": len(chunks)
         },
         "data": [
             {
                 "chunk_hash": chunk.metadata["chunk_hash"],
                 "document_hash": chunk.metadata["document_hash"],
-                "source_type": chunk.metadata["source_type"],
-                **({"token_count": chunk.metadata["token_count"]} if is_token_count else {}),
-                "document": chunk.page_content,
-                "source": "preview",
-                "chunk_index": chunk.metadata["chunk_index"],
-                "start_index": chunk.metadata["start_index"],
                 **({"tags": chunk.metadata["tags"]} if is_tags else {}),
+                "source": "preview",
+                "document_index": chunk.metadata["chunk_index"],
+                "file_type": "text",
+                **({"token_count": chunk.metadata["token_count"]} if is_token_count else {}),
                 "created_at": chunk.metadata["created_at"],
                 "updated_at": chunk.metadata["updated_at"],
+                "text": chunk.page_content,
 
             }
             for chunk in chunks
@@ -528,35 +524,30 @@ async def get_job_status(request: Request, job_id: str):
         logger.error("Invalid job ID", extra={"correlation_id": correlation_id, "job_id": job_id})
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid job ID")
     
-    # TODO: Move this to database.py
-    with db.get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT job_id, created_at, status, error_message, updated_at
-                FROM jobs
-                WHERE job_id = %s
-            """, (job_id,))
-            job = cur.fetchone()
-            if not job:
-                logger.error("Job not found", extra={"correlation_id": correlation_id, "job_id": job_id})
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
-            
-            job_id, created_at, job_status, error_message, updated_at = job
-            job_data = {
-                "job_id": job_id,
-                "created_at": created_at.isoformat(),
-                "status": job_status,
-                "error_message": error_message if job_status == "failed" else None
-            }
-            
-            if job_status == "completed" and updated_at:
-                processing_time = (updated_at - created_at).total_seconds()
-                job_data["processing_time"] = processing_time  # Seconds
-                
-            return {
-                "metadata": {"correlation_id": correlation_id},
-                "data": job_data
-            }
+    job = db.get_job_status(job_id)
+    if not job:
+        logger.error("Job not found", extra={"correlation_id": correlation_id, "job_id": job_id})
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Job not found")
+    
+    job_id, job_status, start_processing_at, document_id, error_message, created_at, updated_at = job
+    job_data = {
+        "job_id": job_id,
+        "created_at": created_at.isoformat(),
+        "status": job_status,
+    }
+
+    if status == "failed":
+        job_data["error_message"] = error_message
+
+    if status == "completed" and updated_at:
+        processing_time = (updated_at - start_processing_at).total_seconds()
+        job_data["processing_time"] = processing_time  # Seconds
+        job_data["document_id"] = document_id
+        
+    return {
+        "metadata": {"correlation_id": correlation_id},
+        "data": job_data
+    }
 
 #################################################
 #                  HEALTH                       #
