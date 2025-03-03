@@ -27,5 +27,3 @@ COPY --from=builder /app /app
 RUN mkdir -p /app/uploads
 
 CMD sh -c "uv run rq worker ${REDIS_QUEUE} --url redis://:${REDIS_PASSWORD}@redis:${REDIS_PORT}/${REDIS_DB}"
-
-# , "&&", "uv", "run", "rq", "worker", "${REDIS_QUEUE}", "--url", "redis://:${REDIS_PASSWORD}@localhost:${REDIS_PORT}/${REDIS_DB}"
