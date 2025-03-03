@@ -162,59 +162,6 @@ def search_by_tag(request: Request, document_request: DocumentRequestByTag):
 #                  DOCUMENT                     #
 #################################################
 
-class CreateDocumentRequest(BaseModel):
-    document: str
-    token_limit: int = int(Config.CHUNK_TOKEN_LIMIT)
-
-# @app.post("/v1/document", status_code=status.HTTP_201_CREATED)
-# def create_document(request: Request, document_request: CreateDocumentRequest):
-#     correlation_id = getattr(request.state, "correlation_id", None)
-#     content = document_request.document
-#     token_limit = document_request.token_limit
-
-#     if not content:
-#         logger.error("Content cannot be empty", extra={"correlation_id": correlation_id})
-#         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Content cannot be empty")
-    
-#     doc = Document(content)
-#     doc_hash = get_text_hash(doc)
-
-    
-#     is_exists = db.search_by_document_hash(get_text_hash(Document(content)))
-#     if is_exists:
-#         logger.error("Document already exists", extra={"correlation_id": correlation_id, "document_id": is_exists[0][2]})
-#         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Document already exists with id {}".format(is_exists[0][2]))
-    
-#     text_splitter = get_text_splitter(tokenizer, chunk_size=token_limit)
-    
-#     chunks = text_splitter.split_documents([doc])
-#     i = 0
-
-#     try:
-#         doc_id = str(uuid.uuid4())
-#         for chunk in chunks:
-#             chunk = add_metadata_to_chunk(
-#                 chunk=chunk, 
-#                 doc_id=doc_id,
-#                 document_hash=doc_hash,
-#                 source_type="api",
-#                 index=i,
-#             )
-#             chunk.metadata["tags"] = get_chunk_tags(chunk)
-#             i += 1
-        
-#         vectordb.add_documents(chunks)
-
-#         results = db.search_by_document_hash(doc_hash)
-#         response = format_document_response(results, correlation_id)
-
-#     except Exception as e:
-#         logger.error("Error creating chunks from document", extra={"correlation_id": correlation_id, "error": str(e)})
-#         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
-    
-#     return response
-
-
 @app.post("/v1/document/async", status_code=status.HTTP_202_ACCEPTED)
 async def create_document_async(
     request: Request,
