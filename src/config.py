@@ -19,3 +19,4 @@ class Config:
     REDIS_PASSWORD = os.getenv("REDIS_PASSWORD")
     REDIS_DB = os.getenv("REDIS_DB", 0)
     REDIS_QUEUE = os.getenv("REDIS_QUEUE", "document_processing")
+    MIN_CHUNK_SIZE = os.getenv("MAX_CHUNK_SIZE", 128)

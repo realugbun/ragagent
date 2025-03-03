@@ -1,0 +1,156 @@
+Table accounts {
+  id UUID [primary key]
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table users {
+  id UUID [primary key]
+  account_id UUID [ref: > accounts.id]
+  role_id UUID [ref: > roles.id]
+  password_hash text [note: 'bcrypt hashed']
+  username text
+  email text
+  query_limit int [note: 'Max queries per month']
+  queries_used int [note: 'Number of queries used this month']
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table roles {
+  id UUID [primary key]
+  name roles_enum
+}
+
+Enum roles_enum {
+  user
+  admin
+}
+
+Table api_keys {
+  id UUID [primary key]
+  key_hash text [note: 'bcrypt hashed']
+  key_prefix text [note: 'First 8 chars of API key for lookup']
+  role_id UUID [ref: > roles.id]
+  expiry_date timestamp
+  requests_per_minute int [default: 100]
+  requests_per_hour int [default: 1000]
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table collections {
+  id UUID [primary key]
+  name text
+  token_count int
+  metadata JSONB
+  is_deleted boolean [default: false]
+  deleted_at timestamp
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table documents {
+  id UUID [primary key]
+  is_deleted boolean [default: false]
+  deleted_at timestamp
+  collection_id UUID [ref: > collections.id]
+  hash bigint [note: 'xxHash 64-bit for speed and uniqueness']
+  tags text[]
+  tags_tvs tsvector
+  token_count int
+  external_id text
+  source text
+  file_type text
+  metadata JSONB
+  created_at timestamp
+  updated_at timestamp
+  indexes {
+    tags_tvs
+  }
+  note: 'Partitioned by account_id'
+}
+
+Table chunks {
+  id UUID [primary key]
+  is_deleted boolean [default: false]
+  deleted_at timestamp
+  document_id UUID [ref: > documents.id]
+  text text
+  tags text[]
+  tags_tvs tsvector
+  hash bigint [note: 'xxHash 64-bit for speed and uniqueness']
+  token_count int
+  document_index int
+  metadata JSONB
+  embedding vector(1536)
+  created_at timestamp
+  updated_at timestamp
+  indexes {
+    embedding
+    tags_tvs
+  }
+  note: 'Partitioned by document_id'
+}
+
+Table jobs {
+  id UUID [primary key]
+  user_id UUID [ref: > users.id]
+  collection_id UUID [ref: > collections.id]
+  document_id UUID
+  status job_status_enum
+  start_processing_at timestamp
+  text text
+  source text
+  error_message text
+  max_chunk_size int
+  created_at timestamp
+  updated_at timestamp
+}
+
+Enum job_status_enum {
+  created
+  processing
+  completed
+  failed
+}
+
+Table audit {
+  id UUID [primary key]
+  user_id UUID [ref: > users.id]
+  path text
+  event_type text [note: 'login, failed_login, query, role_change']
+  metadata JSONB
+  created_at timestamp
+}
+
+Table subscription_types {
+  id UUID [primary key]
+  name text [note: 'free, pro, enterprise']
+  max_tokens int
+  max_queries int
+  created_at timestamp
+  updated_at timestamp
+}
+
+Table subscriptions {
+  id UUID [primary key]
+  account_id UUID [ref: > accounts.id]
+  subscription_type_id UUID [ref: > subscription_types.id]
+  status text [note: 'active, expired, canceled']
+  billing_start timestamp
+  billing_end timestamp
+  created_at timestamp
+  updated_at timestamp
+}
+
+// Lookup Tables
+Table accounts_collections {
+  account_id UUID [ref: > accounts.id]
+  collection_id UUID [ref: > collections.id]
+}
+
+Table users_collections {
+  user_id UUID [ref: > users.id]
+  collection_id UUID [ref: > collections.id]
+}

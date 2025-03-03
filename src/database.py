@@ -1,8 +1,5 @@
-import json
 from psycopg_pool import ConnectionPool
-import uuid
 from dotenv import load_dotenv
-from langchain_postgres import PGVector
 from redis import Redis
 
 from src.config import Config
@@ -40,14 +37,6 @@ def ping_redis() -> bool:
 #                  POSTGRES                     #
 #################################################
 
-def get_pgvector_db(embedding_function):
-    return PGVector(
-    connection=Config.DB_CONNECTION_STRING,
-    embeddings=embedding_function,
-    collection_name="docs",
-    create_extension=False,
-    )
-
 def get_db():
     return pool.connection()
 
@@ -70,86 +59,105 @@ def similarity_search(query_embedding, max_results):
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    id,
-                    cmetadata->>'chunk_hash' as chunk_hash,
-                    cmetadata->>'document_id' as document_id,
-                    cmetadata->'document_hash' as document_hash,
-                    cmetadata->'tags' as tags,
-                    cmetadata->>'source' as source,
-                    cmetadata->>'chunk_index' as chunk_index,
-                    cmetadata->>'start_index' as start_index,
-                    cmetadata->>'source_type' as source_type,
-                    cmetadata->>'token_count' as token_count,
-                    cmetadata->>'created_at' as created_at,
-                    cmetadata->>'updated_at' as updated_at,
-                    document,
-                    1 - (embedding <=> %s::vector) AS similarity_score
-                FROM langchain_pg_embedding
+                    c.id,
+                    c.hash,
+                    c.document_id,
+                    d.hash AS document_hash,
+                    c.tags,
+                    d.source,
+                    c.document_index,
+                    d.file_type,
+                    c.token_count,
+                    c.created_at,
+                    c.updated_at,
+                    c.text,
+                    1 - (c.embedding <=> %s::vector) AS similarity_score
+                FROM chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE c.is_deleted = FALSE
                 ORDER BY similarity_score DESC
                 LIMIT %s
             """, (query_embedding, max_results))
             results = cur.fetchall()
     return results
 
+        
 def search_by_tags(tags, max_results: int):
+    # Ensure tags is a list
     if isinstance(tags, str):
         tags = [tags]
     
-    tag_conditions = ["tag.value ILIKE %s" for _ in tags]
+    tsquery = ' | '.join(tags)
+    
     query = """
         SELECT
-            id,
-            cmetadata->>'chunk_hash' AS chunk_hash,
-            cmetadata->>'document_id' AS document_id,
-            cmetadata->>'document_hash' AS document_hash,
-            cmetadata->>'tags' AS tags,
-            cmetadata->>'source' AS source,
-            cmetadata->>'chunk_index' AS chunk_index,
-            cmetadata->>'start_index' AS start_index,
-            cmetadata->>'source_type' AS source_type,
-            cmetadata->>'token_count' AS token_count,
-            cmetadata->>'created_at' AS created_at,
-            cmetadata->>'updated_at' AS updated_at,
-            document
-        FROM langchain_pg_embedding,
-             LATERAL jsonb_array_elements_text(cmetadata->'tags') AS tag(value)
-        WHERE {}
-        ORDER BY cmetadata->>'created_at' DESC
+            c.id,
+            c.hash,
+            c.document_id,
+            d.hash AS document_hash,
+            c.tags,
+            d.source,
+            c.document_index,
+            d.file_type,
+            c.token_count,
+            c.created_at,
+            c.updated_at,
+            c.text
+        FROM chunks c
+        JOIN documents d ON c.document_id = d.id
+        WHERE c.is_deleted = FALSE
+          AND c.tags_tvs @@ to_tsquery('english', %s)
+        ORDER BY c.updated_at DESC
         LIMIT %s
-    """.format(" OR ".join(tag_conditions))
-    
-    params = [f"%{tag}%" for tag in tags] + [max_results]
+    """
+    params = (tsquery, max_results)
     
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(query, params)
             return cur.fetchall()
 
+
 #################################################
 #                  DOCUMENT                     #
 #################################################
 
-def search_by_document_hash(document_hash):
+def create_document(hash: int, collection_id: str, token_count:int, source: str, file_type: str, external_id: str = None, tags=None):
+    if tags is None:
+        tags = []
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO documents (hash, collection_id, token_count, external_id, source, file_type, tags)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                RETURNING id
+            """, (hash, collection_id, token_count, external_id, source, file_type, tags))
+            document_id = cur.fetchone()[0]
+    return document_id
+
+def search_by_document_hash(document_hash: str):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    id,
-                    cmetadata->>'chunk_hash' as chunk_hash,
-                    cmetadata->>'document_id' as document_id,
-                    cmetadata->'document_hash' as document_hash,
-                    cmetadata->'tags' as tags,
-                    cmetadata->>'source' as source,
-                    cmetadata->>'chunk_index' as chunk_index,
-                    cmetadata->>'start_index' as start_index,
-                    cmetadata->>'source_type' as source_type,
-                    cmetadata->>'token_count' as token_count,
-                    cmetadata->>'created_at' as created_at,
-                    cmetadata->>'updated_at' as updated_at,
-                    document
-                FROM langchain_pg_embedding
-                WHERE cmetadata->>'document_hash' = %s
-                ORDER BY cmetadata->>'created_at' DESC
+                    c.id,
+                    c.hash AS chunk_hash,
+                    c.document_id,
+                    d.hash AS document_hash,
+                    c.tags,
+                    d.source,
+                    c.document_index,
+                    d.file_type,
+                    c.token_count,
+                    c.created_at,
+                    c.updated_at,
+                    c.text
+                FROM chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE d.hash = %s
+                AND c.is_deleted = FALSE
+                ORDER BY c.document_index ASC
             """, (document_hash,))
             results = cur.fetchall()
     return results
@@ -159,22 +167,23 @@ def search_by_document_id(document_id: str):
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    id,
-                    cmetadata->>'chunk_hash' as chunk_hash,
-                    cmetadata->>'document_id' as document_id,
-                    cmetadata->'document_hash' as document_hash,
-                    cmetadata->'tags' as tags,
-                    cmetadata->>'source' as source,
-                    cmetadata->>'chunk_index' as chunk_index,
-                    cmetadata->>'start_index' as start_index,
-                    cmetadata->>'source_type' as source_type,
-                    cmetadata->>'token_count' as token_count,
-                    cmetadata->>'created_at' as created_at,
-                    cmetadata->>'updated_at' as updated_at,
-                    document
-                FROM langchain_pg_embedding
-                WHERE cmetadata->>'document_id' = %s
-                ORDER BY cmetadata->>'created_at' DESC
+                    c.id,
+                    c.hash AS chunk_hash,
+                    c.document_id,
+                    d.hash AS document_hash,
+                    c.tags,
+                    d.source,
+                    c.document_index,
+                    d.file_type,
+                    c.token_count,
+                    c.created_at,
+                    c.updated_at,
+                    c.text
+                FROM chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE d.id = %s
+                AND c.is_deleted = FALSE
+                ORDER BY c.document_index ASC
             """, (document_id,))
             results = cur.fetchall()
     return results
@@ -182,12 +191,25 @@ def search_by_document_id(document_id: str):
 def delete_by_document_id(document_id: str):
     with get_db() as conn:
         with conn.cursor() as cur:
+            # Soft-delete the document
             cur.execute("""
-                DELETE FROM langchain_pg_embedding
-                WHERE cmetadata->>'document_id' = %s
+                UPDATE documents
+                SET is_deleted = TRUE,
+                    deleted_at = NOW()
+                WHERE id = %s
             """, (document_id,))
+            
+            # Soft-delete all associated chunks
+            cur.execute("""
+                UPDATE chunks
+                SET is_deleted = TRUE,
+                    deleted_at = NOW()
+                WHERE document_id = %s
+            """, (document_id,))
+            
             conn.commit()
     return True
+
 
 #################################################
 #                  CHUNK                        #
@@ -198,22 +220,23 @@ def get_chunk_by_hash(chunk_hash: str):
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    id,
-                    cmetadata->>'chunk_hash' as chunk_hash,
-                    cmetadata->>'document_id' as document_id,
-                    cmetadata->'document_hash' as document_hash,
-                    cmetadata->'tags' as tags,
-                    cmetadata->>'source' as source,
-                    cmetadata->>'chunk_index' as chunk_index,
-                    cmetadata->>'start_index' as start_index,
-                    cmetadata->>'source_type' as source_type,
-                    cmetadata->>'token_count' as token_count,
-                    cmetadata->>'created_at' as created_at,
-                    cmetadata->>'updated_at' as updated_at,
-                    document
-                FROM langchain_pg_embedding
-                WHERE cmetadata->>'chunk_hash' = %s
-                ORDER BY cmetadata->>'created_at' DESC
+                    c.id,
+                    c.hash,
+                    c.document_id,
+                    d.hash AS document_hash,
+                    c.tags,
+                    d.source,
+                    c.document_index,
+                    d.file_type,
+                    c.token_count,
+                    c.created_at,
+                    c.updated_at,
+                    c.text
+                FROM chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE c.hash = %s
+                  AND c.is_deleted = FALSE
+                ORDER BY c.created_at DESC
             """, (chunk_hash,))
             results = cur.fetchall()
     return results
@@ -223,69 +246,57 @@ def get_chunk_by_id(chunk_id: str):
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT
-                    id,
-                    cmetadata->>'chunk_hash' as chunk_hash,
-                    cmetadata->>'document_id' as document_id,
-                    cmetadata->'document_hash' as document_hash,
-                    cmetadata->'tags' as tags,
-                    cmetadata->>'source' as source,
-                    cmetadata->>'chunk_index' as chunk_index,
-                    cmetadata->>'start_index' as start_index,
-                    cmetadata->>'source_type' as source_type,
-                    cmetadata->>'token_count' as token_count,
-                    cmetadata->>'created_at' as created_at,
-                    cmetadata->>'updated_at' as updated_at,
-                    document
-                FROM langchain_pg_embedding
-                WHERE id = %s
-                ORDER BY cmetadata->>'created_at' DESC
+                    c.id,
+                    c.hash AS chunk_hash,
+                    c.document_id,
+                    d.hash AS document_hash,
+                    c.tags,
+                    d.source,
+                    c.document_index,
+                    d.file_type,
+                    c.token_count,
+                    c.created_at,
+                    c.updated_at,
+                    c.text
+                FROM chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE c.id = %s
+                  AND c.is_deleted = FALSE
+                ORDER BY c.created_at DESC
             """, (chunk_id,))
             results = cur.fetchall()
     return results
 
-def delete_chunk_by_id(chunk_id: str):
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                DELETE FROM langchain_pg_embedding
-                WHERE id = %s
-            """, (chunk_id,))
-            conn.commit()
-    return True
-
-
 def update_chunk_tags(chunk_id: str, new_tags: list[str]):
-    # Ensure the tags are a valid list of strings
+    # Validate that new_tags is a list of strings.
     if not isinstance(new_tags, list) or not all(isinstance(tag, str) for tag in new_tags):
         raise ValueError("Tags must be a list of strings.")
     
-    # Convert the new tags list to a JSONB array format for the database
-    tags_jsonb = json.dumps(new_tags)
-    
     query = """
-    UPDATE langchain_pg_embedding
-    SET cmetadata = jsonb_set(
-            jsonb_set(cmetadata, '{tags}', %s::jsonb),
-            '{updated_at}', to_jsonb(CURRENT_TIMESTAMP), true
-        )
-    WHERE id = %s
-    RETURNING
-        id,
-        cmetadata->>'chunk_hash' as chunk_hash,
-        cmetadata->>'document_id' as document_id,
-        cmetadata->'document_hash' as document_hash,
-        cmetadata->'tags' as tags,
-        cmetadata->>'source' as source,
-        cmetadata->>'chunk_index' as chunk_index,
-        cmetadata->>'start_index' as start_index,
-        cmetadata->>'source_type' as source_type,
-        cmetadata->>'token_count' as token_count,
-        cmetadata->>'created_at' as created_at,
-        cmetadata->>'updated_at' as updated_at,
-        document
+    WITH updated AS (
+      UPDATE chunks
+      SET tags = %s
+      WHERE id = %s
+      RETURNING *
+    )
+    SELECT
+        updated.id,
+        updated.hash AS chunk_hash,
+        updated.document_id,
+        d.hash AS document_hash,
+        updated.tags,
+        d.source,
+        updated.document_index,
+        d.file_type,
+        updated.token_count,
+        updated.created_at,
+        updated.updated_at,
+        updated.text
+    FROM updated
+    JOIN documents d ON updated.document_id = d.id
     """
     
-    params = [tags_jsonb, chunk_id]
+    params = (new_tags, chunk_id)
     
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -294,13 +305,27 @@ def update_chunk_tags(chunk_id: str, new_tags: list[str]):
     
     return updated_row
 
+
+def delete_chunk_by_id(chunk_id: str):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE chunks
+                SET is_deleted = TRUE,
+                    deleted_at = NOW()
+                WHERE id = %s
+            """, (chunk_id,))
+            conn.commit()
+    return True
+
+
 def is_chunk_exist_by_id(chunk_id: str):
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 SELECT EXISTS(
                     SELECT 1
-                    FROM langchain_pg_embedding
+                    FROM chunks
                     WHERE id = %s
                 )
             """, (chunk_id,))
@@ -315,8 +340,8 @@ def get_collection_id(collection_name: str) -> str:
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT uuid
-                FROM langchain_pg_collection
+                SELECT id
+                FROM collections
                 WHERE name = %s
             """, (collection_name,))
             result = cur.fetchone()
@@ -326,29 +351,45 @@ def get_collection_id(collection_name: str) -> str:
 #                   JOBS                        #
 #################################################
 
-def create_job(max_chunk_size: int, collection_id: str, text: str = None, tenant_id: str = "default", file_path:str = None) -> str:
-    job_id = str(uuid.uuid4())
+def create_job(max_chunk_size: int, collection_id: str, text: str = None, user_id: str = None, source:str = None) -> str:
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO jobs (
-                        job_id,
-                        tenant_id,
-                        max_chunk_size,
-                        status,
+                        user_id,
                         collection_id,
+                        status,
                         text,
-                        file_path
+                        source,
+                        max_chunk_size
                     )
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
-                RETURNING job_id
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING id
             """, (
-                    job_id, 
-                    tenant_id,
-                    max_chunk_size, 
-                    "created", 
+                    user_id,
                     collection_id, 
+                    "created", 
                     text,
-                    file_path
+                    source,
+                    max_chunk_size, 
                 ))
+            job_id = cur.fetchone()[0]
     return job_id
+
+def get_job_status(job_id: str):
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    id,
+                    status,
+                    start_processing_at,
+                    document_id,
+                    error_message,
+                    created_at,
+                    updated_at
+                FROM jobs
+                WHERE id = %s
+            """, (job_id,))
+            job = cur.fetchone()
+    return job
