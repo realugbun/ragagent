@@ -20,6 +20,7 @@ dependencies = [
     "python-multipart>=0.0.20",
     "rq>=2.1.0",
     "spacy>=3.8.4",
+    "torch>=2.6.0",
     "torchaudio>=2.6.0",
     "torchvision>=0.21.0",
     "unstructured>=0.16.23",

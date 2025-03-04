@@ -1,6 +1,7 @@
 import os
 from typing import List
 import uuid
+from itertools import chain
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, status, UploadFile
@@ -54,6 +55,7 @@ def format_document_response(results, correlation_id: str = None):
                 "document_id": result[2],
                 "document_hash": result[3],
                 "tags": result[4] if result[4] is not None else [],
+                "related_tags": db.get_unique_related_tags(result[4]) if result[4] is not None else [],
                 "source": result[5],
                 "document_index": int(result[6]),
                 "file_type": result[7],
@@ -91,12 +93,20 @@ def search_vector_store(request: Request, document_request: DocumentRequest):
         query_embedding = embedding_function.embed_query(query)
 
         # Search the vector store
-        results = db.similarity_search(query_embedding, max_results)                
+        results = db.similarity_search(query_embedding, max_results)
+        if not results:
+            logger.error("No results found", extra={"correlation_id": correlation_id, "query": query})
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No results found")
+
+        all_tags = list(chain.from_iterable([result[4] for result in results]))
+        related_tags = db.get_related_tags(all_tags)
+
         response = {
             "metadata": {
                 "correlation_id": correlation_id,
                 "token_count": sum([int(result[8]) for result in results]),
-                "chunk_count": len(results)
+                "chunk_count": len(results),
+                "related_tags": related_tags if related_tags else []
             },
             "data": [
                 {
@@ -105,6 +115,7 @@ def search_vector_store(request: Request, document_request: DocumentRequest):
                     "document_id": result[2],
                     "document_hash": result[3],
                     "tags": result[4] if result[4] is not None else [],
+                    "related_tags": db.get_unique_related_tags(result[4]) if result[4] is not None else [],
                     "source": result[5],
                     "document_index": int(result[6]),
                     "file_type": result[7],
@@ -112,7 +123,7 @@ def search_vector_store(request: Request, document_request: DocumentRequest):
                     "created_at": result[9],
                     "updated_at": result[10],
                     "text": result[11],
-                    "similarity_score": result[12]
+                    "cosign_similarity_score": result[12]
                 }
                 for result in results
             ]
@@ -202,7 +213,7 @@ async def create_document_async(
     else:
         job_id = db.create_job(max_chunk_size=max_chunk_size, collection_id=collection_id, source="text", text=text)
     
-    background_tasks.add_task(q.enqueue, "src.worker.process_document", job_id)
+    background_tasks.add_task(q.enqueue, "src.worker.process_document", job_id, job_timeout=600)
     logger.info(f"Enqueued job {job_id}", extra={"correlation_id": correlation_id})
     
     return {
@@ -483,13 +494,16 @@ async def get_job_status(request: Request, job_id: str):
         "status": job_status,
     }
 
-    if status == "failed":
+    if job_status == "failed":
         job_data["error_message"] = error_message
 
-    if status == "completed" and updated_at:
+    if job_status == "completed" and updated_at:
+        in_queue_time = (start_processing_at - created_at).total_seconds()
         processing_time = (updated_at - start_processing_at).total_seconds()
-        job_data["processing_time"] = processing_time  # Seconds
         job_data["document_id"] = document_id
+        job_data["in_queue_time"] = in_queue_time
+        job_data["processing_time"] = processing_time
+       
         
     return {
         "metadata": {"correlation_id": correlation_id},

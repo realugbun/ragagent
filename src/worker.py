@@ -144,19 +144,15 @@ def process_document(job_id: str):
                 for index, chunk in enumerate(chunks):
                     
                     embedding = embedding_function.embed_query(chunk.page_content)
-                    logger.info("Embedded chunk", extra={"chunk_index": index, "job_id": job_id})
                     token_count = get_tokens_in_text(chunk.page_content)
-                    logger.info("Counted tokens in chunk", extra={"chunk_index": index, "job_id": job_id})
                     chunk_hash = get_text_hash(chunk)
-                    logger.info("Hashed chunk", extra={"chunk_index": index, "job_id": job_id})
                     tags = get_chunk_tags(chunk)
-                    logger.info("Extracted tags from chunk", extra={"chunk_index": index, "job_id": job_id})
                     
                     cur.execute("""
                         INSERT INTO chunks (document_id, text, tags, hash, token_count, document_index, embedding)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT DO NOTHING;
-                    """, (doc_id, chunk.page_content, tags, chunk_hash, token_count, index, embedding))
+                    """, (doc_id, chunk.page_content.replace('\x00', ''), tags, chunk_hash, token_count, index, embedding))
                 
 
                 cur.execute("UPDATE jobs SET status = 'completed', document_id = %s WHERE id = %s", (doc_id, job_id))

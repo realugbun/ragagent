@@ -1,3 +1,5 @@
+import re
+from psycopg import sql
 from psycopg_pool import ConnectionPool
 from dotenv import load_dotenv
 from redis import Redis
@@ -83,13 +85,19 @@ def similarity_search(query_embedding, max_results):
 
         
 def search_by_tags(tags, max_results: int):
-    # Ensure tags is a list
     if isinstance(tags, str):
         tags = [tags]
     
-    tsquery = ' | '.join(tags)
+    conditions = []
+    params = []
+    for tag in tags:
+        # Use phraseto_tsquery with an explicit cast to text
+        conditions.append("c.tags_tvs @@ phraseto_tsquery('english', %s::text)")
+        params.append(tag)
     
-    query = """
+    where_clause = " OR ".join(conditions)
+    
+    query = f"""
         SELECT
             c.id,
             c.hash,
@@ -106,16 +114,78 @@ def search_by_tags(tags, max_results: int):
         FROM chunks c
         JOIN documents d ON c.document_id = d.id
         WHERE c.is_deleted = FALSE
-          AND c.tags_tvs @@ to_tsquery('english', %s)
+          AND ({where_clause})
         ORDER BY c.updated_at DESC
         LIMIT %s
     """
-    params = (tsquery, max_results)
+    params.append(max_results)
     
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(query, params)
             return cur.fetchall()
+
+
+def get_unique_related_tags(search_tags: list[str], limit: int = 5, min_frequency: int = 2) -> list[str]:
+    """Finds related search tags while filtering out original terms and preventing SQL injection."""
+
+    # Join search terms with ' OR ' to create an OR-based search query
+    ts_query = " OR ".join(search_tags)
+
+    sql_query = sql.SQL("""
+        WITH query_string AS (
+            SELECT format(
+                'SELECT tags_tvs FROM chunks WHERE tags_tvs @@ websearch_to_tsquery(''english'', '{}' ) LIMIT 10',
+                {}
+            ) AS sql_text
+        )
+        SELECT ts.word, ts.ndoc AS frequency
+        FROM ts_stat((SELECT sql_text FROM query_string)) ts
+        WHERE ts.word NOT IN (
+            SELECT word FROM ts_stat(
+                (SELECT format('SELECT to_tsvector(''english'', '{}' )', {}) )
+            )
+        )
+        AND ts.ndoc > %s
+        ORDER BY ts.ndoc DESC
+        LIMIT %s;
+    """).format(sql.Literal(ts_query), sql.Literal(ts_query), sql.Literal(ts_query), sql.Literal(ts_query))
+
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql_query, (min_frequency, limit))
+            related_queries = [row[0] for row in cur.fetchall()]
+
+    return related_queries
+
+
+def get_related_tags(search_tags: list[str], limit: int = 5, min_frequency: int = 2) -> list[str]:
+    """Finds related search tags and returns only what the database provides, safely preventing SQL injection."""
+
+    # Join search terms with ' OR ' to create an OR-based search query
+    ts_query = " OR ".join(search_tags) 
+
+    sql_query = sql.SQL("""
+        WITH query_string AS (
+            SELECT format(
+                'SELECT tags_tvs FROM chunks WHERE tags_tvs @@ websearch_to_tsquery(''english'', '{}' ) LIMIT 10',
+                {}
+            ) AS sql_text
+        )
+        SELECT ts.word, ts.ndoc AS frequency
+        FROM ts_stat((SELECT sql_text FROM query_string)) ts
+        WHERE ts.ndoc > %s
+        ORDER BY ts.ndoc DESC
+        LIMIT %s;
+    """).format(sql.Literal(ts_query), sql.Literal(ts_query))
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql_query, (min_frequency, limit))  
+            related_tags = [row[0] for row in cur.fetchall()]
+
+    return related_tags
 
 
 #################################################
