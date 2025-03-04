@@ -74,7 +74,7 @@ def get_chunk_tags(chunk: Document, top_n: int = 3) -> List[str]:
     text = lemmatize_text(chunk.page_content)
     keywords = keybert.extract_keywords(
         docs=text, 
-        keyphrase_ngram_range=(1, 1), 
+        keyphrase_ngram_range=(1, 2), 
         stop_words='english',
         top_n=top_n
     )
